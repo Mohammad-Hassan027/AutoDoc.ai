@@ -126,10 +126,10 @@ graph TD
     P4 --> P4_2[Community Prompt Templates]
 
     style Root fill:#38BDF8,stroke:#333,color:#000
-    style P1 fill:#34D399,stroke:#333
-    style P2 fill:#34D399,stroke:#333
-    style P3 fill:#34D399,stroke:#333
-    style P4 fill:#34D399,stroke:#333
+    style P1 fill:#34D399,stroke:#333,color:#000
+    style P2 fill:#34D399,stroke:#333,color:#000
+    style P3 fill:#34D399,stroke:#333,color:#000
+    style P4 fill:#34D399,stroke:#333,color:#000
 ```
 ## 📅 $\color{#38BDF8}{\text{Implementation Milestones}}$
 
