@@ -9,7 +9,7 @@ const Generator = () => {
   const [customInstructions, setCustomInstructions] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [markdownOutput, setMarkdownOutput] = useState('');
-  const [activeTab, setActiveTab] = useState('code');
+  const [copied, setCopied] = useState(false);
 
   const handleGenerate = () => {
     setIsGenerating(true);
@@ -20,7 +20,10 @@ const Generator = () => {
   };
 
   const handleCopyCode = () => {
+    if (!markdownOutput) return;
     navigator.clipboard.writeText(markdownOutput);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   return (
@@ -82,44 +85,15 @@ const Generator = () => {
 
         <div className="output-panel">
           <div className="output-header">
-            <div className="output-header-left">
-              <h3>Generated Documentation</h3>
-              <div className="tabs">
-                <button
-                  onClick={() => setActiveTab('code')}
-                  className={`tab-button ${activeTab === 'code' ? 'active' : ''}`}
-                >
-                  Code
-                </button>
-                <button
-                  onClick={() => setActiveTab('preview')}
-                  className={`tab-button ${activeTab === 'preview' ? 'active' : ''}`}
-                >
-                  Preview
-                </button>
-              </div>
-            </div>
-            <button
-              onClick={handleCopyCode}
-              disabled={!markdownOutput}
-              className="btn-copy-icon"
-              aria-label="Copy code"
-            >
-              <svg
-                stroke="currentColor"
-                fill="none"
-                strokeWidth="2"
-                viewBox="0 0 24 24"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                height="1em"
-                width="1em"
-                xmlns="http://www.w3.org/2000/svg"
+            <h3>Generated Documentation</h3>
+            {markdownOutput && (
+              <button 
+                onClick={handleCopyCode} 
+                className={`btn btn-copy ${copied ? 'copied' : ''}`}
               >
-                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-              </svg>
-            </button>
+                {copied ? 'Copied! ✓' : 'Copy Code'}
+              </button>
+            )}
           </div>
           {activeTab === 'code' ? (
             <pre className="output-content">
