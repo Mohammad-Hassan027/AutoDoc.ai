@@ -10,6 +10,8 @@ const Generator = () => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [markdownOutput, setMarkdownOutput] = useState('');
   const [activeTab, setActiveTab] = useState('code');
+  const [copied, setCopied] = useState(false);
+  const [downloaded, setDownloaded] = useState(false);
 
   const handleGenerate = () => {
     setIsGenerating(true);
@@ -20,7 +22,12 @@ const Generator = () => {
   };
 
   const handleCopyCode = () => {
+    if (!markdownOutput) return;
     navigator.clipboard.writeText(markdownOutput);
+    setCopied(true);
+    setTimeout(() => {
+      setCopied(false);
+    }, 2000);
   };
 
   const handleDownloadFile = () => {
@@ -48,6 +55,11 @@ const Generator = () => {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+
+    setDownloaded(true);
+    setTimeout(() => {
+      setDownloaded(false);
+    }, 2000);
   };
 
   return (
@@ -127,49 +139,56 @@ const Generator = () => {
               </div>
             </div>
             <div className="output-header-actions">
-              <button
-                onClick={handleCopyCode}
-                disabled={!markdownOutput}
-                className="btn-copy-icon"
-                aria-label="Copy code"
-              >
-                <svg
-                  stroke="currentColor"
-                  fill="none"
-                  strokeWidth="2"
-                  viewBox="0 0 24 24"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  height="1em"
-                  width="1em"
-                  xmlns="http://www.w3.org/2000/svg"
+              <div className={`tooltip-wrapper ${copied ? 'show-success' : ''}`}>
+                <button
+                  onClick={handleCopyCode}
+                  disabled={!markdownOutput}
+                  className="btn-copy-icon"
+                  aria-label="Copy code"
                 >
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                </svg>
-              </button>
-              <button
-                onClick={handleDownloadFile}
-                disabled={!markdownOutput}
-                className="btn-copy-icon"
-                aria-label="Download file"
-              >
-                <svg
-                  stroke="currentColor"
-                  fill="none"
-                  strokeWidth="2"
-                  viewBox="0 0 24 24"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  height="1em"
-                  width="1em"
-                  xmlns="http://www.w3.org/2000/svg"
+                  <svg
+                    stroke="currentColor"
+                    fill="none"
+                    strokeWidth="2"
+                    viewBox="0 0 24 24"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    height="1em"
+                    width="1em"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                </button>
+                <span className="tooltip-text">{copied ? 'Copied!' : 'Copy Code'}</span>
+              </div>
+
+              <div className={`tooltip-wrapper ${downloaded ? 'show-success' : ''}`}>
+                <button
+                  onClick={handleDownloadFile}
+                  disabled={!markdownOutput}
+                  className="btn-copy-icon"
+                  aria-label="Download file"
                 >
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                  <polyline points="7 10 12 15 17 10"></polyline>
-                  <line x1="12" y1="15" x2="12" y2="3"></line>
-                </svg>
-              </button>
+                  <svg
+                    stroke="currentColor"
+                    fill="none"
+                    strokeWidth="2"
+                    viewBox="0 0 24 24"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    height="1em"
+                    width="1em"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                  </svg>
+                </button>
+                <span className="tooltip-text">{downloaded ? 'Downloaded!' : 'Download File'}</span>
+              </div>
             </div>
           </div>
           {activeTab === 'code' ? (
