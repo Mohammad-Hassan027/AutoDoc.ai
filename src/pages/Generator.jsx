@@ -96,7 +96,15 @@ const Generator = () => {
               onChange={(e) => setCustomInstructions(e.target.value)}
               className="text-textarea"
               rows={5}
+              maxLength={500}
             />
+            <div
+              className={`char-counter ${
+                customInstructions.length >= 450 ? "warning" : ""
+              } ${customInstructions.length >= 500 ? "limit" : ""}`}
+            >
+              {customInstructions.length} / 500
+            </div>
           </div>
 
           <button
