@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import "../styles/Generator.css";
 import Navbar from "../components/Navbar";
 
@@ -23,6 +23,18 @@ const parseGitHubUrl = (url) => {
   return { isValid: false, owner: '', repo: '' };
 };
 
+const PHASE_LABELS = {
+  queued: "Queued",
+  starting: "Starting",
+  fetching_tree: "Fetching Repository Tree",
+  fetching_files: "Fetching Files",
+  generating: "Generating Documentation",
+  completed: "Completed",
+  failed: "Failed",
+};
+
+const PHASE_ORDER = ["queued", "starting", "fetching_tree", "fetching_files", "generating", "completed"];
+
 const Generator = () => {
   useEffect(() => {
     document.title = "Workspace | AutoDoc.ai";
@@ -39,6 +51,21 @@ const Generator = () => {
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [error, setError] = useState('');
   const [shouldShake, setShouldShake] = useState(false);
+
+  // Job progress state
+  const [jobPhase, setJobPhase] = useState('');
+  const [jobMessage, setJobMessage] = useState('');
+  const [jobProgress, setJobProgress] = useState({ filesProcessed: 0, totalFiles: 0 });
+  const eventSourceRef = useRef(null);
+
+  // Cleanup SSE on unmount
+  useEffect(() => {
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
+    };
+  }, []);
 
   const handleUrlChange = (e) => {
     setRepoUrl(e.target.value);
@@ -76,6 +103,47 @@ const Generator = () => {
     };
   }, [activeTab, markdownOutput]);
 
+  const connectToJobStatus = useCallback((jobId) => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
+
+    const es = new EventSource(`/api/job-status?id=${encodeURIComponent(jobId)}`);
+    eventSourceRef.current = es;
+
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        setJobPhase(data.phase || '');
+        setJobMessage(data.message || '');
+        setJobProgress(data.progress || { filesProcessed: 0, totalFiles: 0 });
+
+        if (data.status === "completed") {
+          setMarkdownOutput(data.markdown || '');
+          setIsGenerating(false);
+          setJobPhase('completed');
+          setJobMessage('Documentation generated successfully!');
+          es.close();
+        } else if (data.status === "failed") {
+          setError(data.error || data.message || "Generation failed.");
+          setIsGenerating(false);
+          setJobPhase('failed');
+          setShouldShake(true);
+          setTimeout(() => setShouldShake(false), 400);
+          es.close();
+        }
+      } catch (_) {
+        /* ignore parse errors */
+      }
+    };
+
+    es.onerror = () => {
+      setError("Lost connection to job status stream. Please try again.");
+      setIsGenerating(false);
+      es.close();
+    };
+  }, []);
+
   const handleGenerate = async () => {
     const trimmedUrl = repoUrl.trim();
     if (!trimmedUrl) {
@@ -95,6 +163,10 @@ const Generator = () => {
 
     setError('');
     setIsGenerating(true);
+    setJobPhase('queued');
+    setJobMessage('Submitting job...');
+    setJobProgress({ filesProcessed: 0, totalFiles: 0 });
+    setMarkdownOutput('');
 
     try {
       const response = await fetch('/api/generate-readme', {
@@ -105,6 +177,7 @@ const Generator = () => {
         body: JSON.stringify({
           repoUrl: trimmedUrl,
           customInstructions,
+          async: true,
         }),
       });
       const data = await response.json();
@@ -113,13 +186,20 @@ const Generator = () => {
         throw new Error(data.error || 'Documentation generation failed.');
       }
 
-      setMarkdownOutput(data.markdown);
+      if (data.jobId) {
+        connectToJobStatus(data.jobId);
+      } else if (data.markdown) {
+        // Synchronous fallback
+        setMarkdownOutput(data.markdown);
+        setIsGenerating(false);
+        setJobPhase('completed');
+      }
     } catch (e) {
       setError(e.message);
+      setIsGenerating(false);
+      setJobPhase('');
       setShouldShake(true);
       setTimeout(() => setShouldShake(false), 400);
-    } finally {
-      setIsGenerating(false);
     }
   };
 
@@ -127,6 +207,12 @@ const Generator = () => {
     setRepoUrl("");
     setCustomInstructions("");
     setMarkdownOutput("");
+    setJobPhase('');
+    setJobMessage('');
+    setJobProgress({ filesProcessed: 0, totalFiles: 0 });
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
   };
 
   const handleCopyCode = () => {
@@ -226,6 +312,18 @@ const Generator = () => {
     }, 2000);
   };
 
+  const progressPercent = (() => {
+    const phaseIdx = PHASE_ORDER.indexOf(jobPhase);
+    if (phaseIdx < 0) return 0;
+    const basePercent = (phaseIdx / (PHASE_ORDER.length - 1)) * 100;
+    if (jobPhase === "fetching_files" && jobProgress.totalFiles > 0) {
+      const filePercent = (jobProgress.filesProcessed / jobProgress.totalFiles);
+      const phaseRange = 100 / (PHASE_ORDER.length - 1);
+      return Math.min(basePercent + filePercent * phaseRange, 100);
+    }
+    return Math.min(basePercent, 100);
+  })();
+
   return (
     <div className="generator-container">
       <Navbar />
@@ -282,7 +380,7 @@ const Generator = () => {
               {isGenerating ? (
                 <>
                   <span className="spinner"></span>
-                  Generating...
+                  Processing...
                 </>
               ) : (
                 "Generate Documentation"
@@ -297,6 +395,49 @@ const Generator = () => {
               Clear
             </button>
           </div>
+
+          {/* Job Progress Tracker */}
+          {isGenerating && jobPhase && (
+            <div className="job-progress-panel">
+              <div className="job-progress-header">
+                <span className="job-progress-phase-icon">
+                  {jobPhase === "completed" ? "✓" : jobPhase === "failed" ? "✗" : "⟳"}
+                </span>
+                <span className="job-progress-phase-label">
+                  {PHASE_LABELS[jobPhase] || jobPhase}
+                </span>
+              </div>
+              <div className="job-progress-bar-track">
+                <div
+                  className={`job-progress-bar-fill ${jobPhase === "failed" ? "failed" : ""}`}
+                  style={{ width: `${progressPercent}%` }}
+                />
+              </div>
+              <div className="job-progress-message">{jobMessage}</div>
+              {jobPhase === "fetching_files" && jobProgress.totalFiles > 0 && (
+                <div className="job-progress-files">
+                  {jobProgress.filesProcessed} / {jobProgress.totalFiles} files fetched
+                </div>
+              )}
+              <div className="job-progress-steps">
+                {PHASE_ORDER.slice(0, -1).map((phase) => {
+                  const currentIdx = PHASE_ORDER.indexOf(jobPhase);
+                  const stepIdx = PHASE_ORDER.indexOf(phase);
+                  const isDone = currentIdx > stepIdx;
+                  const isActive = currentIdx === stepIdx;
+                  return (
+                    <div
+                      key={phase}
+                      className={`job-step ${isDone ? "done" : ""} ${isActive ? "active" : ""}`}
+                    >
+                      <span className="job-step-dot" />
+                      <span className="job-step-label">{PHASE_LABELS[phase]}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="output-panel">

@@ -114,7 +114,8 @@
   border-radius: 16px;
   padding: 1.25rem 2.5rem 2.5rem;
   border: 1px solid var(--border-color);
-  height: 450px;
+  min-height: 450px;
+  height: auto;
 }
 
 .panel-title {
@@ -426,4 +427,140 @@
   0%, 100% { transform: translateX(0); }
   25% { transform: translateX(-4px); }
   75% { transform: translateX(4px); }
+}
+
+/* ─── Job Progress Panel ─── */
+
+.job-progress-panel {
+  margin-top: 1.5rem;
+  padding: 1.25rem 1.5rem;
+  background: rgba(34, 197, 94, 0.04);
+  border: 1px solid rgba(34, 197, 94, 0.15);
+  border-radius: 12px;
+  animation: fadeIn 0.3s ease-out;
+}
+
+.job-progress-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.job-progress-phase-icon {
+  font-size: 1rem;
+  animation: spin 1.2s linear infinite;
+  display: inline-block;
+  color: var(--accent-color);
+}
+
+.job-progress-phase-label {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+}
+
+.job-progress-bar-track {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-bottom: 0.5rem;
+}
+
+.job-progress-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #22c55e, #4ade80, #22c55e);
+  background-size: 200% 100%;
+  animation: shimmer 2s ease-in-out infinite;
+  transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.job-progress-bar-fill.failed {
+  background: linear-gradient(90deg, #ef4444, #f87171, #ef4444);
+  animation: none;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.job-progress-message {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.75rem;
+}
+
+.job-progress-files {
+  font-size: 0.8rem;
+  color: var(--accent-color);
+  font-weight: 500;
+  margin-bottom: 0.75rem;
+}
+
+.job-progress-steps {
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.job-step {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  color: #71717a;
+  transition: all 0.3s ease;
+}
+
+.job-step.active {
+  color: var(--accent-color);
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.job-step.done {
+  color: #a1a1aa;
+}
+
+.job-step-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #3f3f46;
+  transition: all 0.3s ease;
+  flex-shrink: 0;
+}
+
+.job-step.active .job-step-dot {
+  background: var(--accent-color);
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
+}
+
+.job-step.done .job-step-dot {
+  background: #a1a1aa;
+}
+
+.job-step-label {
+  white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  .job-progress-panel {
+    padding: 1rem;
+  }
+
+  .job-progress-steps {
+    gap: 0.15rem;
+  }
+
+  .job-step {
+    padding: 0.15rem 0.35rem;
+    font-size: 0.68rem;
+  }
 }

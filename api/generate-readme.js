@@ -142,7 +142,18 @@ const resolveProvider = (env) => {
   };
 };
 
-const githubFetch = async (url, env) => {
+/* ───────────────────────────────────────────────────────────────
+   Resilient GitHub Fetch with Retry & Exponential Backoff
+   ─────────────────────────────────────────────────────────────── */
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const MAX_RETRIES = 5;
+const BASE_DELAY_MS = 1000;
+const MAX_DELAY_MS = 30000;
+const BATCH_CONCURRENCY = 5;
+
+const githubFetch = async (url, env, retryCount = 0) => {
   const token = readEnv(env, "GITHUB_TOKEN");
   const response = await fetch(url, {
     headers: {
@@ -150,6 +161,36 @@ const githubFetch = async (url, env) => {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
   });
+
+  // --- Rate limit & transient error handling ---
+  if (response.status === 429 || response.status === 403 || (response.status >= 500 && response.status < 600)) {
+    if (retryCount >= MAX_RETRIES) {
+      const error = new Error(`GitHub API request failed after ${MAX_RETRIES} retries (HTTP ${response.status}).`);
+      error.statusCode = 502;
+      error.expose = true;
+      throw error;
+    }
+
+    let delayMs;
+    const retryAfter = response.headers.get("retry-after");
+    const rateLimitReset = response.headers.get("x-ratelimit-reset");
+
+    if (retryAfter) {
+      delayMs = parseInt(retryAfter, 10) * 1000;
+    } else if (rateLimitReset) {
+      delayMs = Math.max(0, parseInt(rateLimitReset, 10) * 1000 - Date.now());
+    } else {
+      delayMs = Math.min(BASE_DELAY_MS * Math.pow(2, retryCount), MAX_DELAY_MS);
+    }
+
+    // Add jitter (±25%)
+    delayMs = delayMs * (0.75 + Math.random() * 0.5);
+    delayMs = Math.min(delayMs, MAX_DELAY_MS);
+
+    console.log(`[AutoDoc] GitHub API rate limited/error (HTTP ${response.status}). Retrying in ${Math.round(delayMs)}ms (attempt ${retryCount + 1}/${MAX_RETRIES})...`);
+    await sleep(delayMs);
+    return githubFetch(url, env, retryCount + 1);
+  }
 
   if (!response.ok) {
     const message = response.status === 404 ? "Repository not found or not accessible." : "GitHub repository inspection failed.";
@@ -182,7 +223,51 @@ const scorePath = (path) => {
   return score;
 };
 
-const collectRepositoryContext = async ({ owner, repo }, env) => {
+/* ───────────────────────────────────────────────────────────────
+   Batched File Fetching with Concurrency Control
+   ─────────────────────────────────────────────────────────────── */
+
+const fetchBlobsBatched = async (candidates, owner, repo, env, maxBytesPerFile, maxContextBytes, onProgress) => {
+  const files = [];
+  let usedBytes = 0;
+  let processed = 0;
+
+  for (let i = 0; i < candidates.length; i += BATCH_CONCURRENCY) {
+    if (usedBytes >= maxContextBytes) break;
+
+    const batch = candidates.slice(i, i + BATCH_CONCURRENCY);
+    const results = await Promise.allSettled(
+      batch.map((file) =>
+        githubFetch(`https://api.github.com/repos/${owner}/${repo}/git/blobs/${file.sha}`, env)
+          .then((blob) => ({ file, blob }))
+      )
+    );
+
+    for (const result of results) {
+      if (usedBytes >= maxContextBytes) break;
+      if (result.status !== "fulfilled") continue;
+
+      const { file, blob } = result.value;
+      const content = Buffer.from(blob.content || "", "base64").toString("utf8").slice(0, maxBytesPerFile);
+      usedBytes += Buffer.byteLength(content, "utf8");
+
+      if (content.trim()) {
+        files.push({ path: file.path, content });
+      }
+    }
+
+    processed += batch.length;
+    if (onProgress) {
+      onProgress(Math.min(processed, candidates.length), candidates.length);
+    }
+  }
+
+  return files;
+};
+
+const collectRepositoryContext = async ({ owner, repo }, env, onProgress) => {
+  if (onProgress) onProgress("fetching_tree", 0, 0, "Fetching repository metadata...");
+
   const repoInfo = await githubFetch(`https://api.github.com/repos/${owner}/${repo}`, env);
   const tree = await githubFetch(`https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(repoInfo.default_branch)}?recursive=1`, env);
   const maxFiles = asNumber(env.REPO_FILE_LIMIT, 24);
@@ -195,25 +280,14 @@ const collectRepositoryContext = async ({ owner, repo }, env) => {
     .sort((a, b) => scorePath(b.path) - scorePath(a.path))
     .slice(0, maxFiles);
 
-  const files = [];
-  let usedBytes = 0;
+  if (onProgress) onProgress("fetching_files", 0, candidates.length, `Fetching ${candidates.length} files in batches...`);
 
-  for (const file of candidates) {
-    if (usedBytes >= maxContextBytes) {
-      break;
+  const files = await fetchBlobsBatched(
+    candidates, owner, repo, env, maxBytesPerFile, maxContextBytes,
+    (processed, total) => {
+      if (onProgress) onProgress("fetching_files", processed, total, `Fetched ${processed}/${total} files...`);
     }
-
-    const blob = await githubFetch(`https://api.github.com/repos/${owner}/${repo}/git/blobs/${file.sha}`, env);
-    const content = Buffer.from(blob.content || "", "base64").toString("utf8").slice(0, maxBytesPerFile);
-    usedBytes += Buffer.byteLength(content, "utf8");
-
-    if (content.trim()) {
-      files.push({
-        path: file.path,
-        content,
-      });
-    }
-  }
+  );
 
   return {
     repository: {
@@ -339,6 +413,108 @@ const generateMarkdown = async (provider, messages, env) => {
   return callOpenAiCompatible(provider, messages, env);
 };
 
+/* ───────────────────────────────────────────────────────────────
+   In-Memory Job Queue
+   ─────────────────────────────────────────────────────────────── */
+
+const jobs = new Map();
+const JOB_TTL_MS = 10 * 60 * 1000; // 10 minutes
+let jobCounter = 0;
+
+const generateJobId = () => {
+  jobCounter += 1;
+  return `job_${Date.now()}_${jobCounter}`;
+};
+
+const cleanupOldJobs = () => {
+  const now = Date.now();
+  for (const [id, job] of jobs) {
+    if (now - job.createdAt > JOB_TTL_MS) {
+      jobs.delete(id);
+    }
+  }
+};
+
+const createJob = () => {
+  cleanupOldJobs();
+  const id = generateJobId();
+  const job = {
+    id,
+    status: "queued",
+    phase: "queued",
+    progress: { filesProcessed: 0, totalFiles: 0 },
+    message: "Job queued...",
+    markdown: null,
+    error: null,
+    createdAt: Date.now(),
+    listeners: new Set(),
+  };
+  jobs.set(id, job);
+  return job;
+};
+
+const updateJob = (job, updates) => {
+  Object.assign(job, updates);
+  const event = JSON.stringify({
+    status: job.status,
+    phase: job.phase,
+    progress: job.progress,
+    message: job.message,
+    markdown: job.markdown,
+    error: job.error,
+  });
+  for (const listener of job.listeners) {
+    try {
+      listener(event);
+    } catch (_) {
+      /* listener gone */
+    }
+  }
+};
+
+const processJob = async (job, parsedRepo, customInstructions, env) => {
+  try {
+    updateJob(job, { status: "processing", phase: "starting", message: "Resolving LLM provider..." });
+
+    const provider = resolveProvider(env);
+
+    const repositoryContext = await collectRepositoryContext(parsedRepo, env, (phase, processed, total, message) => {
+      updateJob(job, {
+        phase,
+        progress: { filesProcessed: processed, totalFiles: total },
+        message,
+      });
+    });
+
+    updateJob(job, { phase: "generating", message: "Generating documentation with AI..." });
+
+    const messages = createMessages(repositoryContext, customInstructions);
+    const markdown = await generateMarkdown(provider, messages, env);
+
+    if (!markdown || !markdown.trim()) {
+      throw new Error("The LLM provider returned an empty README.");
+    }
+
+    updateJob(job, {
+      status: "completed",
+      phase: "completed",
+      message: "Documentation generated successfully!",
+      markdown: markdown.trim(),
+    });
+  } catch (error) {
+    updateJob(job, {
+      status: "failed",
+      phase: "failed",
+      message: error.expose ? error.message : "Documentation generation failed. Check server configuration and provider logs.",
+      error: error.expose ? error.message : "Documentation generation failed.",
+    });
+  }
+};
+
+/* ───────────────────────────────────────────────────────────────
+   HTTP Handlers
+   ─────────────────────────────────────────────────────────────── */
+
 export const generateReadmeHandler = async (req, res, env = process.env) => {
   if (req.method !== "POST") {
     return sendJson(res, 405, { error: "Method not allowed." });
@@ -353,6 +529,16 @@ export const generateReadmeHandler = async (req, res, env = process.env) => {
     }
 
     const customInstructions = String(body.customInstructions || "").slice(0, 1000);
+
+    // If client requests async processing
+    if (body.async) {
+      const job = createJob();
+      // Fire-and-forget processing
+      processJob(job, parsedRepo, customInstructions, { ...env });
+      return sendJson(res, 202, { jobId: job.id, status: "queued", message: "Job queued for processing." });
+    }
+
+    // Synchronous fallback (backward compatible)
     const provider = resolveProvider(env);
     const repositoryContext = await collectRepositoryContext(parsedRepo, env);
     const messages = createMessages(repositoryContext, customInstructions);
@@ -368,6 +554,80 @@ export const generateReadmeHandler = async (req, res, env = process.env) => {
       error: error.expose ? error.message : "Documentation generation failed. Check server configuration and provider logs.",
     });
   }
+};
+
+export const jobStatusHandler = (req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const jobId = url.searchParams.get("id");
+
+  if (!jobId) {
+    return sendJson(res, 400, { error: "Missing job ID." });
+  }
+
+  const job = jobs.get(jobId);
+  if (!job) {
+    return sendJson(res, 404, { error: "Job not found." });
+  }
+
+  // SSE stream
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+
+  // Send current state immediately
+  const sendEvent = (data) => {
+    res.write(`data: ${data}\n\n`);
+  };
+
+  sendEvent(JSON.stringify({
+    status: job.status,
+    phase: job.phase,
+    progress: job.progress,
+    message: job.message,
+    markdown: job.markdown,
+    error: job.error,
+  }));
+
+  // If already done, close
+  if (job.status === "completed" || job.status === "failed") {
+    res.end();
+    return;
+  }
+
+  // Subscribe for updates
+  const listener = (eventData) => {
+    sendEvent(eventData);
+    const parsed = JSON.parse(eventData);
+    if (parsed.status === "completed" || parsed.status === "failed") {
+      job.listeners.delete(listener);
+      res.end();
+    }
+  };
+
+  job.listeners.add(listener);
+
+  req.on("close", () => {
+    job.listeners.delete(listener);
+  });
+};
+
+export const __testing = {
+  parseGitHubUrl,
+  readJsonBody,
+  resolveProvider,
+  githubFetch,
+  isTextFile,
+  scorePath,
+  fetchBlobsBatched,
+  collectRepositoryContext,
+  createMessages,
+  generateMarkdown,
+  createJob,
+  processJob,
+  jobs,
+  generateJobId
 };
 
 export default generateReadmeHandler;
